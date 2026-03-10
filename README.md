@@ -24,19 +24,25 @@ I'm drawing on what I've done before here, but I've no doubt it'll change a bit 
 I'm gonna do this in Rust. Reason: trust me bro
 I've tried this in C++/Arduino before, and it takes a hellish amount of macros and templates. I think Rust will be easier. But even if it isn't that much better, I've got institutional biases to accommodate.
 
-## oops, all strings
-Ye olde string shall be the core data element. Not saying strings will be the only supported datatype, but at the end of the day it's all bytes in memory so let's just start there.
-I have other reasons for this, which include:
-- architecture agnostic (see testing aspirations)
-- legible
-- maximum compatibility with array of relevent communication protocols (serial, network, idk what else)
-  - I have *not* picked a communication protocol yet. It would be _neat_ if there were multiple supported options, but we'll see
+## Value types
+The runtime wire type is a tagged enum, not a string:
+```rust
+pub enum Value {
+    Bool(bool),
+    Int(i32),
+    Float(f32),
+    // ...
+}
+```
+Strings are still relevant as a _serialization_ format for config and control interfaces, but are not used as the in-memory signal type. Which variants are compiled in is controlled by feature flags — only pay for what you use.
+
+A given firmware build is a closed world: the deployer selects the type set at flash time. This makes exhaustive `match` a feature, not a burden.
 
 
 ## configurable behavior on static hardware
 The aim is to let the user configure inputs and outputs essentially at runtime*, based on "hardcoded" hardware capabilities. I'm aiming specifically at `ESP32-C3` and Arduino for initial applications, which have differences. I should be able to compile in valid hardware expectations to whatever I deploy (i.e. what pins are available and their modes). Then, the system can run a pipeline of logical operations on top of configured inputs and wire the results to configured outputs. Any given pipeline can be validated for compatibility with the hardware (and validated for cycles, missing signals, etc) as well. But that validation can happen at "_configuration_" or "_construction_" time, not at "compile" time.
 For a microcontroller, that means evaluated at startup. OR maybe, evaluated at transmission.
-> I'm getting into implementation here, but I'm imagining that the currently-active behavior description is stored in EEPROM, and is perhaps writable to the system at runtime in some fashion. If a proposed behavioral description is invalid, you can just fall back to what persisted from last time...
+> How the active configuration is obtained and persisted is a use-case decision, not a library decision. Options include: stored in EEPROM, received over serial at boot, or hardcoded. The library provides construction and validation — the application layer decides the source.
 
 ## Light-weight
 Ideally, only compile what the system needs. That might even mean only compiling translators for the a subset of datatypes and/or "function blocks". Regardless, code memory space on microcontrollers is painfully finite.
@@ -60,39 +66,46 @@ First off, you gotta configure the hardware. I use "configure" here loosely, bec
 - a cycle rate
 
 ### Design decisions:
-- control vs hardware interfaces: do we limit cycle rate by control interface or nah?
-    - if simpler, we can limit on the external interface rate. But we (maybe?) want to avoid the system blocking on an external clock....
-    - let's call this "synchronous" (blocking) vs "asynchronous" C/S. Synchronous seems simpler for now -- async can come later, perhaps
-- do we allow heterogeneous control/state interfaces?
-    - probably not. Theoretically possible but I see no practical use case at this time.
+- control loop clock: whether to cycle on incoming external messages or an independent timer is a use-case decision. The library imposes one constraint: the input bus must not be mutated during an execution cycle.
+- heterogeneous control/state interfaces: no. Theoretically possible but no practical use case at this time.
 
 
-## Signals, (Bundles?), and Blocks
-Once the static stuff is defined, you instantiate the behavioral pipeline. I'm gonna describe this in very object oriented terms, cognizant that Rust will probably morph this a lot. Anyway:
+## Signals and Blocks
+Once the static stuff is defined, you instantiate the behavioral pipeline.
 
-### `Block<InputBundle, OutputBundle>`
-The Block is the atomic unit of behavior. It has inputs, it does stuff with them, and that stuff results in output values.
-Baked into the block's definition (in C++ I do this with templating) is a contract about what it's inputs and outputs will be.
-I've called these "bundles" in the past -- basically a tuple of named types. The specific implementation of this impacts how the configuration works, but the core idea is to be able to "wire up" the outputs of one block as inputs to another block. And because of the templating, you get compile-time type safety even if the bundle's constituent elements are defined at runtime:
+### Signals
+A signal is a typed value flowing between blocks. There are three signal kinds, used in three corresponding bundles per block:
 
-### `super::execute()`
-> Yeah my syntax is wrong, deal with it
-Basically, you make all blocks inherit from an abstract base class that forces them to define an execute/update function.
-This is where the actual math happens, like running a pid or scaling a value or whatever. And yes, those applications imply the existence of block configuration. We've got some options there...
+| Bundle | Signal type | Writable after construction? |
+|---|---|---|
+| Inputs | `SignalReader<T>` | by upstream block or hardware |
+| Config | `StaticSignal<T>` | no — writer dropped at construction |
+| Outputs | `SignalReader<T>` (public) + `SignalWriter<T>` (private) | by this block only |
 
-### `SomeBlock::InputBundle = SomeBundle<float: some_float, bool some_bool>`
-This is the next fancy bit: the bundle is also templated. It's actually called something else in C++ which I've forgotten, but the core idea here is to be able to define the block's input and output interfaces as a group of named and type attributes. This guarentees two things:
-- *internal type safety*: when used in the block itself, the data stays the same type
-- *external type safety*: when you wire one block's output as another's input, the types stay the same
-    - _bonus: through pointer shenanigans, downstream block's input can actually use the same data location as the upstream output_
+Signals live in a central `SignalBus`. Access is via typed handle objects that keep the backing index private. `SignalWriter<T>` is not `Clone` or `Copy` — exactly one writer per signal, enforced by the type system. Wiring type mismatches are compile errors.
+
+### `Block`
+The Block is the atomic unit of behavior. Each block type defines input, config, and output bundles, and **begets its own output signals** at construction time — the block allocates them internally and exposes readers publicly for downstream blocks to wire up.
+
+```rust
+let foo = AdderBlock::new(&mut bus,
+    AdderInputs { a: hw_pin1.clone(), b: hw_pin2.clone() },
+    AdderConfig { clamp_max: StaticSignal::new(&mut bus, 10.0) },
+);
+let bar = ScaleBlock::new(&mut bus,
+    ScaleInputs { input: foo.outputs.sum.clone() },
+    ScaleConfig { factor: StaticSignal::new(&mut bus, 2.0) },
+);
+```
+
+This is where the math happens — PID, scaling, logic, whatever. Types are guaranteed by the handles; no type-matching is needed in the execute body.
 
 ### Registration & Instantiation
 This is maybe the trickiest part, and it's implementation is gonna be most susceptible to how building & deployment works. One constraint you might try to leverage on an implementation of such a scheme is to be able to trivially add new Block definitions to the system. You could specialize all this to minimize the boilerplate you need to write a new block, or to let you easily select only a subset (or superset) of blocks to compile.
 Whatever. The important part for this application is that there's a way to read in a config file, identify which blocks its describing and how it wants them wired up, and to then construct those blocks with their inputs fed from the hardware and/or control input bus and their outputs feeding either to other blocks or to the output/control bus. And because all the types are so safe and all, this system should be able to ensure the validity of the configuration at or before block construction time.
 
 #### does this mean my precious blocks are allocated on the heap?
-yes. If you choose to use a dynamic configuration mechanism. Which I am choosing to do. In principle, you could compile and deploy a compile-time instantiated block graph instead. Go do that yourself.
-Personally, I don't care about this because I'm too young to know why I should, and because if anything's going to go wrong it'll go wrong at startup, which is fine by me.
+Yes — but strictly at startup. The run loop never allocates. A valid `Context` object is proof that construction and validation succeeded; if anything is going to go wrong, it goes wrong at startup. The run loop is allocation-free by design.
 
 ## Core loop
 Ok so now you've got your blocks instantiated and wired up in between the inputs and outputs. Now for the easy part:
