@@ -313,6 +313,28 @@ Whether the execution cycle is clocked by:
 
 ---
 
+## Implementation roadmap
+
+### Phase 1 — execution loop skeleton
+Block out `Context`, `SignalBus`, and the `Block` trait. Implement `run_cycle`. No real blocks yet — just enough structure to execute a graph.
+
+### Phase 2 — signals, bundles, and blocks
+Implement `SignalWriter<T>`, `SignalReader<T>`, `StaticSignal<T>`, `SignalType` trait, and `SignalBus::allocate`. Define the three-bundle pattern. Implement one or two concrete blocks (e.g. `ScaleBlock`, `AdderBlock`) as a worked example. Scaffold tests for signal wiring and block execution — structure for testability, not full coverage yet.
+
+### Phase 3 — JSON configuration
+Implement a config layer that reads a JSON description of a block graph, instantiates blocks with wired signals, and produces a `Context`. Includes config-layer validation (cycle detection, topo sort, type checking where not already compile-time guaranteed).
+
+### Phase 4 — external interface and hardware abstraction (design)
+With a working config-driven runtime in hand, design the external control/state interface and the hardware I/O abstraction. Decisions deferred until the core is proven.
+
+### Phase 5 — file/stdin stub implementations
+Implement hardware pins as files, control/state interface as stdin/stdout. Use these to run full end-to-end tests across the core without real hardware.
+
+### Phase 6 — architecture-agnostic hardware layer
+Plan and implement the HAL abstraction for real deployment targets (ESP32-C3, Arduino, etc.), informed by what the stub implementations revealed.
+
+---
+
 ## Open questions
 
 - Exact `Block` trait signature: does `execute` take `&SignalBus` + `&mut SignalBus` separately, or a single `&mut SignalBus`? Separate read/write buses would enforce that blocks don't read their own outputs mid-cycle.
