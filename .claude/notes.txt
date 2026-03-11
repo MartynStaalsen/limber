@@ -1,0 +1,492 @@
+❯ ok can you give me a generic example of defining a trait with bounds?                                                                       
+
+● From the Rust book — a trait with a supertrait bound:
+
+  use std::fmt;
+
+  trait Printable: fmt::Display {
+      fn print(&self) {
+          println!("{}", self);
+      }
+  }
+
+  And with multiple bounds using +:
+
+  trait Storable: Clone + fmt::Debug {
+      fn store(&self);
+  }
+
+  Any type implementing Storable must also implement Clone and Debug. The bounds are enforced at the impl site — if you try to impl Storable
+  for Foo and Foo doesn't implement Clone, it won't compile.
+
+❯ why tryfrom and not just from?                                                                                                              
+
+● From guarantees the conversion always succeeds. TryFrom returns a Result to handle the case where it might fail.
+
+  For Value → T, the conversion can fail — if you have a Value::Float and try to convert it to bool, that's an error. So TryFrom is the right
+  choice.
+
+  Going the other way (T → Value) always succeeds — every f32 is a valid Value::Float — so Into<Value> (equivalently From<Value> for T) is
+  appropriate there.
+
+❯ ok i get the functional difference, but it seems like we ought to be able to force the conversion to always work? or is catching the error  
+in the tryFrom how we'll validate the conifiguration at construction time? in general, i'm worried about building in a way that something     
+could break after compile time because this is an embedded system application                                                                 
+
+● The TryFrom failure is exactly the right place to catch config-layer mistakes — but you're right that it should be unreachable in a
+  correctly constructed system.
+
+  The key insight is: who calls TryFrom?
+
+  Not the execute loop. The execute loop only ever calls bus.read::<f32>(&some_float_reader), and because SignalReader<f32> can only exist if
+  a f32 was written there, the conversion is guaranteed to succeed. The unreachable! in the architecture doc reflects this — it's a logical
+  impossibility, not a runtime risk.
+
+  TryFrom only gets called during construction, when the config layer is wiring things up. That's where a type mismatch would be caught —
+  startup time, not runtime. Which is exactly your constraint.
+
+  So the picture is:
+  - Compile time: typed handles (SignalReader<f32>) prevent wiring mismatches in code-defined graphs
+  - Startup time: TryFrom catches mismatches in config-defined graphs — system fails to construct, never enters the run loop
+  - Run loop: conversion is structurally guaranteed, unreachable! is genuinely unreachable
+
+  No type errors can survive into the run loop. The TryFrom failure mode is the startup-time safety valve, not a runtime risk.
+
+❯ am i on the right track here? use std::convert::TryFrom;                                                                                    
+use std::convert::Into;                                                                                                                       
+                                                                                                                                              
+pub enum Value {                                                                                                                              
+    Bool(bool),                                                                                                                               
+    Int(i32),                                                                                                                                 
+    Float(f32)                                                                                                                                
+}                                                                                                                                             
+                                                                                                                                              
+pub trait SignalType<T>: TryFrom<Value> + Into<Value> {                                                                                       
+                                                                                                                                              
+}                                                                                                                                             
+
+● Mostly yes — the Value enum and the direction of TryFrom/Into are correct.
+
+  Two things to address:
+
+  The <T> parameter on SignalType is redundant. The bounds TryFrom<Value> + Into<Value> are already on Self — the type that implements the
+  trait. There's no separate T involved. Look at how your Storable: Clone + Debug example worked — no type parameter needed there either.
+
+  The use statements are unnecessary in Rust 2021 edition — TryFrom and Into are in the prelude. Not wrong, just noise.
+
+  One more thing to do once the trait definition is right: it has no body, which is valid — but you still need the {} at the end. Then write
+  the impl SignalType for bool and impl SignalType for f32 — those will force you to also implement TryFrom<Value> and Into<Value> for each
+  concrete type, which is the next logical step.
+
+❯ ok now give me an example of implementing a trait for a type                                                                                
+
+● From the Rust book:
+
+  struct Circle {
+      radius: f64,
+  }
+
+  trait Area {
+      fn area(&self) -> f64;
+  }
+
+  impl Area for Circle {
+      fn area(&self) -> f64 {
+          std::f64::consts::PI * self.radius * self.radius
+      }
+  }
+
+  For a trait with bounds (like TryFrom), the impl block is where you define the required associated types and methods. Look up TryFrom in the
+   std docs — it has an associated type Error that you'll need to specify.
+
+❯ ok got it. for actually implementing the try from and into on these types, can you talk me thru what I need to do at a psuedocode level?    
+
+● Sure. For each concrete type (say f32):
+
+  Into<Value> for f32 — trivial:
+  - take a f32
+  - wrap it in Value::Float
+  - return it
+
+  TryFrom<Value> for f32 — pattern match on the incoming Value:
+  - if it's Value::Float(v), return Ok(v)
+  - if it's anything else, return Err(...) — you'll need to decide what the error type is. A simple string or a custom TypeError enum are both
+   fine for now.
+
+  That's it. Same pattern for bool / Value::Bool and i32 / Value::Int.
+
+  The only thing to figure out before you write it: what's your error type for the TryFrom impl? Look at the TryFrom docs to see how type
+  Error = ... works.
+
+❯ is this right for into? if not, can you show the right version and explain the syntax line by line?                                         
+
+● You forgot to paste the code!
+
+❯                                                                                                                                             
+impl SignalType for f32 {                                                                                                                     
+    impl Into<Value> for f32 {                                                                                                                
+        fn into(self) -> Value {                                                                                                              
+            Value {Float(self)}                                                                                                               
+        }                                                                                                                                     
+    }                                                                                                                                         
+}                                                                                                                                             
+
+● Two issues:
+
+  Nested impl blocks aren't valid. impl SignalType for f32 and impl Into<Value> for f32 are separate, top-level blocks. You don't nest them.
+
+  Value::Float(self) is the correct enum variant syntax, not Value {Float(self)} — that's struct syntax.
+
+  So you actually need three separate impl blocks per type:
+
+  impl Into<Value> for f32 { ... }
+  impl TryFrom<Value> for f32 { ... }
+  impl SignalType for f32 {}
+
+  The last one is empty because SignalType has no methods — it just asserts that the other two are implemented.
+
+❯ ok so I've got this as a first pass: pub enum Value {                                                                                       
+    Bool(bool),                                                                                                                               
+    Int(i32),                                                                                                                                 
+    Float(f32)                                                                                                                                
+}                                                                                                                                             
+                                                                                                                                              
+pub trait SignalType: Into<Value> { // + TryFrom<Value> {                                                                                     
+}                                                                                                                                             
+                                                                                                                                              
+impl Into<Value> for bool {                                                                                                                   
+    fn into(self) -> Value {                                                                                                                  
+        Value::Bool(self)                                                                                                                     
+    }                                                                                                                                         
+}                                                                                                                                             
+impl SignalType for bool {}                                                                                                                   
+                                                                                                                                              
+impl Into<Value> for i32 {                                                                                                                    
+    fn into(self) -> Value {                                                                                                                  
+        Value::Int(self)                                                                                                                      
+    }                                                                                                                                         
+}                                                                                                                                             
+impl SignalType for i32 {}                                                                                                                    
+                                                                                                                                              
+                                                                                                                                              
+impl Into<Value> for f32 {                                                                                                                    
+    fn into(self) -> Value {                                                                                                                  
+        Value::Float(self)                                                                                                                    
+    }                                                                                                                                         
+}                                                                                                                                             
+impl SignalType for f32 {}                                                                                                                    
+                                                                                                                                              
+                                                                                                                                              
+
+● Good — this will compile and the logic is correct. One convention note before you go further:
+
+  Rust's convention is to implement From rather than Into directly. There's a blanket impl in std that gives you Into automatically whenever
+  you implement From:
+
+  // if you implement this...
+  impl From<Foo> for Bar { ... }
+
+  // you get this for free
+  impl Into<Bar> for Foo { ... }
+
+  Clippy will actually warn you about implementing Into directly. The equivalent for your case would be impl From<bool> for Value etc. — same
+  logic, just flipped: you're defining how Value is constructed from a bool, rather than how a bool goes into a Value.
+
+  Worth flipping those before moving on, then uncomment the TryFrom bound and implement that side too.
+
+❯ oh dang that's weird. so you're saying I actually should implement "impl From<bool> for Value {...}"? like this: impl From<bool> for Value  
+{                                                                                                                                             
+    fn into(self) -> bool {                                                                                                                   
+        bool(self)                                                                                                                            
+    }                                                                                                                                         
+}                                                                                                                                             
+
+● Almost — but the method name and direction are flipped. From<bool> for Value means you're implementing how to make a Value from a bool, so:
+
+  - the method is fn from(val: bool) -> Value (not into, not fn from() -> bool)
+  - the body wraps it in the enum variant
+
+  Have another go at it.
+
+❯ impl From<bool> for Value {                                                                                                                 
+    fn from(val: bool) -> Value {                                                                                                             
+        Value::Bool(self)                                                                                                                     
+    }                                                                                                                                         
+}                                                                                                                                             
+
+● Almost! One typo — self should be val in the body. self has no meaning here; val is the parameter you named.
+
+❯ pub enum Value {                                                                                                                            
+    Bool(bool),                                                                                                                               
+    Int(i32),                                                                                                                                 
+    Float(f32)                                                                                                                                
+}                                                                                                                                             
+                                                                                                                                              
+pub trait SignalType: Into<Value> { // + TryFrom<Value> {                                                                                     
+}                                                                                                                                             
+                                                                                                                                              
+impl From<bool> for Value { // implements Into for SignalType                                                                                 
+    fn from(val: bool) -> Value {                                                                                                             
+        Value::Bool(val)                                                                                                                      
+    }                                                                                                                                         
+}                                                                                                                                             
+impl SignalType for bool {}                                                                                                                   
+                                                                                                                                              
+impl From<i32> for Value {                                                                                                                    
+    fn from(val: i32) -> Value {                                                                                                              
+        Value::Int(val)                                                                                                                       
+    }                                                                                                                                         
+}                                                                                                                                             
+impl SignalType for i32 {}                                                                                                                    
+                                                                                                                                              
+                                                                                                                                              
+impl From<f32> for Value {                                                                                                                    
+    fn from(val: f32) -> Value {                                                                                                              
+        Value::Float(val)                                                                                                                     
+    }                                                                                                                                         
+}                                                                                                                                             
+impl SignalType for f32 {}                                                                                                                    
+                                                                                                                                              
+?                                                                                                                                             
+
+● Yes, that's correct. Does it compile?
+
+  Once it does, the next step is to uncomment TryFrom<Value> from the SignalType bound and implement it for each type — that's the other
+  direction (extracting a concrete type out of a Value).
+
+❯ yep it compiles. question: if we already have From, can we use this to implement the TryFrom?                                               
+
+● Yes — for the T → Value direction (From) you get Into for free via blanket impl. But TryFrom is the other direction: Value → T, which can
+  fail. There's no blanket impl that derives TryFrom from From in that direction, so you do need to implement it explicitly.
+
+  However, there is a blanket impl that gives you TryInto<T> for free once you implement TryFrom<Value> for T — same pattern as From/Into.
+
+❯ ok i get that now. so i'm implementing Value::Float -> f32. this should fail if the Value was not originally created as a Float (from an    
+f32). how do i check this?                                                                                                                    
+
+● Pattern matching. Match on the Value variant — if it's the one you expect, return Ok(inner_value), otherwise return Err(...).
+
+  Look up match expressions in the Rust book — specifically matching on enum variants with inner values.
+
+❯ ok how does this look: impl TryFrom<Value> for bool{                                                                                        
+    type Error = ("...");                                                                                                                     
+                                                                                                                                              
+    fn try_from(val: Value) -> Result<Self, Self::Error> {                                                                                    
+        match val {                                                                                                                           
+            Value::Float => {                                                                                                                 
+                Ok(bool(val))                                                                                                                 
+            }                                                                                                                                 
+            default => {                                                                                                                      
+                return Err(Self::Error("Value was not Bool"))                                                                                 
+            }                                                                                                                                 
+        }                                                                                                                                     
+                                                                                                                                              
+    }                                                                                                                                         
+}                                                                                                                                             
+
+● Good structure, a few things to fix:
+
+  1. Value::Float should be Value::Bool — you're implementing for bool, so match on the Bool variant.
+  2. Enum variants with inner values need a binding — Value::Bool holds a bool, so the match arm needs to destructure it: Value::Bool(v) =>
+  Ok(v).
+  3. bool(val) is not valid syntax — once you destructure correctly in the match arm, you already have the inner value directly.
+  4. type Error = ("...") is not valid — type Error needs to be a type, not a value. For now a simple &'static str is fine: type Error =
+  &'static str.
+  5. Err(Self::Error(...)) is not how you construct an Err — Self::Error is a type alias, not a constructor. Since it's a &'static str, just
+  write Err("Value was not Bool").
+  6. default is valid as a catch-all pattern name but the convention is _ for "I don't care about this value".
+
+  Have another go with those in mind.
+
+❯ impl TryFrom<Value> for bool{                                                                                                               
+    type Error = &'static str;                                                                                                                
+                                                                                                                                              
+    fn try_from(val: Value) -> Result<Self, Self::Error> {                                                                                    
+        match val {                                                                                                                           
+            Value::Bool(v) => {                                                                                                               
+                Ok(v)                                                                                                                         
+            }                                                                                                                                 
+            _ => {                                                                                                                            
+                return Err("Value was not Bool")                                                                                              
+            }                                                                                                                                 
+        }                                                                                                                                     
+                                                                                                                                              
+    }                                                                                                                                         
+}                                                                                                                                             
+
+● That's correct. Two minor style notes:
+
+  - The return keyword is redundant on the last expression of a block — Err("Value was not Bool") without return is more idiomatic
+  - The {} blocks around single-expression match arms are usually dropped for brevity
+
+  Neither affects correctness. Does it compile? Then do the same for i32 and f32, uncomment the TryFrom<Value> bound on SignalType, and wire
+  value.rs into the module system.
+
+❯ ok i've implemented the other two, look at signals.rs and see what you think. THen here's a q: there's a lot of "duplicate" code in here.   
+is there a rust-idiomatic way to write these trait implementations once in a "templated" way, then invoke that to set up the Value::subtype   
+-> rust type mapping?                                                                                                                         
+
+● Bash(find /home/martyn-fwl/git/limber -name "*.rs" | xargs ls)
+  ⎿  /home/martyn-fwl/git/limber/lib/src/lib.rs
+     /home/martyn-fwl/git/limber/lib/src/objs/block.rs
+     /home/martyn-fwl/git/limber/lib/src/objs/context.rs
+     … +3 lines (ctrl+o to expand)
+
+● Read 1 file (ctrl+o to expand)
+
+● Looks good. Clean, readable, correct.
+
+  On the duplication question — yes, the idiomatic Rust answer is a macro. Specifically a macro_rules! declarative macro. The pattern of
+  "implement the same set of traits for multiple types with only the type name and enum variant changing" is a classic macro use case.
+
+  A generic example from the Rust docs pattern:
+
+  macro_rules! impl_summary {
+      ($t:ty) => {
+          impl Summary for $t {
+              fn summarize(&self) -> String {
+                  format!("(Read more from {}...)", stringify!($t))
+              }
+          }
+      };
+  }
+
+  impl_summary!(NewsArticle);
+  impl_summary!(Tweet);
+
+  The $t:ty is a macro parameter that matches a type. You invoke it once per type and it expands to the full impl block.
+
+  For your case you'd need to pass both the Rust type and the Value variant, since those don't share a name (f32 ↔ Float, bool ↔ Bool).
+  Macro parameters can match identifiers ($variant:ident) as well as types ($t:ty).
+
+  That said — this is an optional refactor. The repetitive code is only 60 lines and adding a new type is mechanical. Whether the macro
+  complexity is worth it is a judgement call. What do you think?
+
+❯ how does this look?                                                                                                                         
+macro_rules! map_signal_types {                                                                                                               
+    ($t:ty, $variant:ident) => {                                                                                                              
+        impl From<$t> for Value { // implements Into for SignalType                                                                           
+            fn from(val: $t) -> Value {                                                                                                       
+                Value::$variant(val)                                                                                                          
+            }                                                                                                                                 
+        }                                                                                                                                     
+        impl TryFrom<Value> for $t{                                                                                                           
+            type Error = &'static str;                                                                                                        
+                                                                                                                                              
+            fn try_from(val: Value) -> Result<Self, Self::Error> {                                                                            
+                match val {                                                                                                                   
+                    Value::$variant(v) => Ok(v),                                                                                              
+                    _ => Err("Value was incorrect variant")                                                                                   
+                }                                                                                                                             
+            }                                                                                                                                 
+        }                                                                                                                                     
+        impl SignalType for $t {}                                                                                                             
+    }                                                                                                                                         
+}                                                                                                                                             
+
+● That's correct and idiomatic. Invoke it with:
+
+  map_signal_types!(bool, Bool);
+  map_signal_types!(i32, Int);
+  map_signal_types!(f32, Float);
+
+  And you can delete the 50 lines of manual impls. Does it compile?
+
+❯ ok now wacky idea / side tangent: what would it look like to add a string type here?                                                        
+
+● Not wacky at all — it fits naturally. Two things to think through before you try it:
+
+  1. String vs &str — which do you want in the enum variant? String is heap-allocated and owned, &str is a borrowed slice. For a Value that
+  owns its data (which it should), String is the right choice.
+  2. The TryFrom impl is the same pattern — match on Value::Str(s) => Ok(s), fall through to Err.
+
+  The wrinkle: String carries a heap allocation, which you'd be doing every time you create a Value::Str. That's the tradeoff you'd be
+  accepting — fine for a config/serialization boundary, less great if string signals end up in the execute loop.
+
+  But functionally it's just map_signal_types!(String, Str) plus adding Str(String) to the enum. Try it and see.
+
+❯ tell me more about the heap issue? if I had blocks that inputed/outputed string signals, is that gonna be an issue?                         
+
+● Yes, potentially. The issue is allocation in the execute loop, which we specifically ruled out as a constraint.
+
+  Every time a block writes a String signal, it creates a new heap allocation. Every time the value gets cloned (e.g. multiple readers),
+  another allocation. On a microcontroller with limited heap and no allocator guarantees, this adds up — and it's non-deterministic in timing,
+   which matters for any kind of real-time behaviour.
+
+  There are a few options:
+
+  - Don't allow String as a signal type — strings are fine for config/serialization (loading a JSON config, naming signals) but not as runtime
+   wire types. This is probably the right call given the use case.
+  - Fixed-size string — something like [u8; N] with a const generic size baked in at compile time. Stack allocated, deterministic, but awkward
+   to work with.
+  - &'static str — string literals only, no allocation. Very limited.
+
+  My instinct: keep strings out of the signal type system entirely. The config layer deals in strings (JSON keys, block names, signal names),
+  but by the time you're in the execute loop everything has been resolved to numeric/boolean values. String signals don't fit any of the
+  embedded use cases you've described.
+
+  What would a string signal actually represent in your button box / hardware application?
+
+❯ ok, we'll come back to this for config if needed, and say that blocks shall not pass "String"s                                              
+
+● Agreed. Closing that door now is cleaner than designing around it later.
+
+  Shall we move on to SignalReader<T>, SignalWriter<T>, and StaticSignal<T>?
+
+❯ yep, what's next?                                                                                                                           
+
+● SignalReader<T> and SignalWriter<T>. These are structs that wrap a usize index and a PhantomData<T>.
+
+  Before you write them, look up PhantomData in the Rust docs — specifically why it exists. The short version: Rust's type system needs to
+  know that SignalReader<T> "uses" T even though it doesn't actually store a T. Without PhantomData, the compiler complains about an unused
+  type parameter.
+
+  Your tasks:
+  1. Define SignalReader<T> and SignalWriter<T> as structs with a private usize and PhantomData<T>
+  2. SignalReader<T> should derive Clone, SignalWriter<T> should not
+  3. Add SignalBus::allocate<T: SignalType> — takes an initial value, pushes it onto the Vec<Value>, returns the (SignalWriter<T>,
+  SignalReader<T>) pair
+  4. Add SignalBus::read and SignalBus::write using the typed handles
+
+  The bound on allocate and read/write will need T: SignalType — which in turn requires Into<Value> and TryFrom<Value>. Think about which
+  operations need which bound.
+
+  Have a go and share when ready.
+
+❯                                                                                                                                             
+#[derive(Clone)]                                                                                                                              
+struct SignalReader<T> where T: SignalType {                                                                                                  
+    size: usize,                                                                                                                              
+    phantom: std::marker::PhantomData<(T)>,                                                                                                   
+}                                                                                                                                             
+                                                                                                                                              
+struct SignalWriter<T> where T: SignalType {                                                                                                  
+    size: usize,                                                                                                                              
+    phantom: std::marker::PhantomData<(T)>,                                                                                                   
+}                                                                                                                                             
+
+● Good structure. A few notes:
+
+  1. size should be index — it's an index into the bus, not a size. Just a naming thing but it matters for readability.                       
+  2. where T: SignalType on the struct is debatable — Rust allows it but the community convention is generally to put bounds on the impl
+  blocks rather than the struct definition itself. Look up "rust where clause on struct vs impl" for the reasoning — short version: it forces 
+  the bound everywhere even when not needed.
+  3. PhantomData<(T)> — the extra parens are redundant, PhantomData<T> is sufficient.
+  4. Visibility — these fields should stay private (which they are by default), but the structs themselves will need to be pub eventually.
+
+  Good enough to move forward though — now try SignalBus::allocate.
+
+❯ ok so im workign on allocate and we got a complication: initial value. structurally, we ought not be able to read from a signal which has   
+not yet been written to. how do we handle that?                                                                                               
+  ⎿  Interrupted · What should Claude do instead?                                                                                             
+                                                                                                                                              
+❯ actually lets unpack that a bit: we need to be able to read from static (config) signals that haven't been written to, but those are a      
+special case whose value should be assigned at construction. All others would ideally not even have an initial value because that allows      
+unexpected behavior to occur silently if those defaults are read, rather than a noisy failure. So I'm thinking the right move is to set some  
+kindof "none" flag or whatever, and throw if reading occurs. but of course, this allows failures at runtime, which is also not ideal.         
+thoughts? is there an elegant, rust-iomatic way to do this?                                                                                   
+  ⎿  Interrupted · What should Claude do instead?                                                                                             
+                                                                                                                                              
+❯ hello?                                                                                                                                      
+  ⎿  Interrupted · What should Claude do instead?                                                                                             
+                                                   
