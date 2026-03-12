@@ -77,6 +77,7 @@ I've called these "bundles" in the past -- basically a tuple of named types. The
 
 ### `super::execute()`
 > Yeah my syntax is wrong, deal with it
+
 Basically, you make all blocks inherit from an abstract base class that forces them to define an execute/update function.
 This is where the actual math happens, like running a pid or scaling a value or whatever. And yes, those applications imply the existence of block configuration. We've got some options there...
 
