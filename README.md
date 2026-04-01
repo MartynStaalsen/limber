@@ -1,5 +1,5 @@
 # limber
-we'll see where (if) this goes...
+Library of Interfaced Modular Blocks for Embedded Remotes
 
 ## the story
 I have something like 4 failed attempts at this the kernel of inspiration behind this project.
