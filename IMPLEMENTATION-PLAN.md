@@ -1,4 +1,4 @@
-# limber architecture
+# limber — implementation plan
 
 This document captures design decisions reached during early planning. It is a living doc — update it as decisions evolve.
 
@@ -315,8 +315,12 @@ Whether the execution cycle is clocked by:
 
 ## Implementation roadmap
 
-### Phase 1 — execution loop skeleton
+### Phase 1 — execution loop skeleton ✓ (session 0, mostly)
 Block out `Context`, `SignalBus`, and the `Block` trait. Implement `run_cycle`. No real blocks yet — just enough structure to execute a graph.
+
+Done: `Context`, `SignalBus` stub, `Block` trait, `run_cycle`, `Value` enum, `SignalType` trait + `map_signal_types!` macro, `SignalReader<T>`, `SignalWriter<T>`.
+
+Remaining: `Block::execute` needs `&mut SignalBus` parameter (currently no args); `SignalBus` needs `values: Vec<Value>` field and `allocate`/`read`/`write`.
 
 ### Phase 2 — signals, bundles, and blocks
 Implement `SignalWriter<T>`, `SignalReader<T>`, `StaticSignal<T>`, `SignalType` trait, and `SignalBus::allocate`. Define the three-bundle pattern. Implement one or two concrete blocks (e.g. `ScaleBlock`, `AdderBlock`) as a worked example. Scaffold tests for signal wiring and block execution — structure for testability, not full coverage yet.
