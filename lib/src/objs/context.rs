@@ -9,7 +9,7 @@ pub struct Context {
 impl Context {
   pub fn run_cycle(&mut self){
     for block in &mut self.blocks {
-      block.execute()
+      block.execute(&mut self.bus);
     }
   }
 }
