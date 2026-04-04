@@ -1,3 +1,4 @@
+#[derive(Clone)]
 pub enum Value {
     Bool(bool),
     Int(i32),
@@ -31,15 +32,3 @@ macro_rules! map_signal_types {
 map_signal_types!(bool, Bool);                                                                                                              
 map_signal_types!(i32, Int);                                                                                                                
 map_signal_types!(f32, Float);  
-
-#[derive(Clone)]
-struct SignalReader<T> { //where T: SignalType {
-    index: usize,
-    phantom: std::marker::PhantomData<T>,
-}
-
-struct SignalWriter<T> { // where T: SignalType {
-    index: usize,
-    phantom: std::marker::PhantomData<T>,
-}
-

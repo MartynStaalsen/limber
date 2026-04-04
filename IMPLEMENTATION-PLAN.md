@@ -71,6 +71,8 @@ pub struct SignalReader<T>(usize, PhantomData<T>);
 
 `SignalWriter<T>` being non-`Clone`/non-`Copy` means moving it into a block transfers sole ownership. Passing the same writer to two blocks is a compile error. No two outputs can fight over a signal.
 
+**Design note:** storing a `&SignalBus` in each handle was considered as a compile-time guarantee that handles can't be used with the wrong bus. Rejected: `allocate` must mutate the bus (`&mut self`) and simultaneously hand out `&self` references — Rust's borrow checker makes this impossible without interior mutability or unsafe. The `Context` struct provides the same structural guarantee by owning both the bus and the blocks together. If multi-bus scenarios arise, a composite bus approach is the planned solution.
+
 ### Type safety via `SignalType` trait
 
 ```rust
@@ -90,7 +92,8 @@ pub struct StaticSignal<T>(SignalReader<T>);
 
 impl<T: SignalType> StaticSignal<T> {
     pub fn new(bus: &mut SignalBus, value: T) -> Self {
-        let (writer, reader) = bus.allocate(value);
+        let (reader, writer) = bus.allocate();
+        bus.write(&writer, value);
         drop(writer); // only write this signal ever receives — writer ceases to exist
         Self(reader)
     }
@@ -105,25 +108,27 @@ impl<T: SignalType> StaticSignal<T> {
 
 The `SignalBus` owns the backing storage and is the only constructor for handles. Each call to `allocate` produces exactly one `(SignalWriter<T>, SignalReader<T>)` pair. It is an implementation detail of `Context` — construction-phase code interacts with it directly, but it is not exposed at runtime.
 
+Slots are `Option<Value>` — unwritten signals are `None`. Reading an unwritten signal panics. This is intentional: silently returning a zero/default for an unwritten hardware input would inject a false value into the system. If an application needs a safe default, it is the caller's responsibility to write one before reading.
+
 ```rust
 pub struct SignalBus {
-    values: Vec<Value>,
+    values: Vec<Option<Value>>,
 }
 
 impl SignalBus {
-    pub fn allocate<T: SignalType>(&mut self, initial: T) -> (SignalWriter<T>, SignalReader<T>) {
+    pub fn allocate<T: SignalType>(&mut self) -> (SignalWriter<T>, SignalReader<T>) {
         let idx = self.values.len();
-        self.values.push(initial.into());
-        (SignalWriter(idx, PhantomData), SignalReader(idx, PhantomData))
+        self.values.push(None);
+        (SignalReader::new(idx), SignalWriter::new(idx))
     }
 
     pub fn read<T: SignalType>(&self, r: &SignalReader<T>) -> T {
-        T::try_from(self.values[r.0].clone())
-            .unwrap_or_else(|_| unreachable!("type guaranteed by SignalReader<T>"))
+        let value = self.values[r.index].clone().expect("signal read before write");
+        T::try_from(value).unwrap_or_else(|_| unreachable!("type guaranteed by SignalReader<T>"))
     }
 
     pub fn write<T: SignalType>(&mut self, w: &SignalWriter<T>, value: T) {
-        self.values[w.0] = value.into();
+        self.values[w.index] = Some(value.into());
     }
 }
 ```
