@@ -1,0 +1,64 @@
+Session 2 summary
+=================
+
+## Starting point
+
+Resumed from session 1. Phase 1 was structurally mostly done (Context, Block trait,
+run_cycle, Value, SignalType, macro, SignalReader/Writer stubs) but SignalBus was an
+empty struct. Goal: complete SignalBus to close out Phase 1.
+
+## What was implemented
+
+### SignalBus
+- `values: Vec<Option<Value>>` — slots are Option, not Value directly
+- `new()` constructor
+- `allocate<T: SignalType>() -> (SignalReader<T>, SignalWriter<T>)` — pushes None, returns index-based handles
+- `read<T: SignalType>(&self, reader: &SignalReader<T>) -> T` — panics on None ("signal read before write")
+- `write<T: SignalType>(&mut self, writer: &SignalWriter<T>, val: T)` — stores Some(val.into())
+
+### SignalHandle<T>
+Introduced as a shared base struct for SignalReader/SignalWriter to avoid field duplication.
+Both are tuple structs wrapping SignalHandle. SignalReader derives Clone, SignalWriter does not.
+
+### Signal types moved
+SignalReader/SignalWriter/SignalHandle moved from signal.rs into signal_bus.rs to avoid
+circular imports (signal_bus imports signal, so signal cannot import signal_bus).
+
+## Key design decisions
+
+### Option<Value> for bus slots
+Signals are None until written. Reading an unwritten signal panics. Rationale: on embedded
+targets, a silent zero/default for an unwritten hardware input injects a false value into
+the system. Structural prevention preferred over silent fallback. If a caller wants a safe
+default, they write it explicitly.
+
+### Lifetime experiment (tried and reverted)
+Explored storing &'a SignalBus in handles as a compile-time guarantee that handles can't
+be used with the wrong bus. Hit a fundamental borrow checker conflict: allocate takes
+&mut self (to push onto values) and cannot simultaneously hand out &self references to
+the handles being returned. Interior mutability (RefCell) would resolve it but trades
+compile-time for runtime checking. Reverted to index-only handles.
+
+Conclusion documented in IMPLEMENTATION-PLAN.md: Context owning both bus and blocks
+is the structural guarantee. Composite bus is the planned solution if multi-bus scenarios
+arise.
+
+### Lifetimes (concept learned)
+User learned lifetime syntax: 'a as a generic parameter, &'a T meaning "reference valid
+for at least 'a", lifetime elision rules (single input ref → output ref gets same lifetime).
+
+## Files changed
+- lib/src/objs/signal_bus.rs — full implementation (was empty struct)
+- lib/src/objs/signal.rs — removed SignalReader/SignalWriter stubs, added #[derive(Clone)] to Value
+- IMPLEMENTATION-PLAN.md — updated Signal handles section with design note on lifetime
+  decision, updated Option<Value> rationale, updated StaticSignal snippet
+
+## Phase 1 status: COMPLETE
+cargo check passes clean. All of: Context, SignalBus, Block trait, run_cycle, Value,
+SignalType, macro, SignalReader, SignalWriter, SignalHandle are implemented and compile.
+
+## Next: Phase 2
+- StaticSignal<T>
+- Concrete block implementations (ScaleBlock, AdderBlock)
+- Three-bundle pattern (Inputs, Config, Outputs)
+- Scaffold tests

@@ -1,0 +1,347 @@
+❯ can you see CLAUDE.md?                                                  
+
+● Yes, I can see both:
+
+  1. /home/martyn-fwl/.claude/CLAUDE.md — your global config (git policy,
+  code references, PR review/triage procedures, Rust preferences)
+  2. /home/martyn-fwl/git/limber/CLAUDE.md — project-specific instructions
+   noting this is a "baby's first Rust" project, so I should advise and
+  review, not implement by default
+
+  Anything you'd like to work on?
+
+❯ is there a difference between the root and the .claude one? which do    
+you see natively>                                                         
+
+● Both are loaded natively — they appear in my context automatically via
+  the claudeMd system block, without me needing to read them explicitly.
+
+  The difference is scope:
+
+  - ~/.claude/CLAUDE.md — global, applies to all projects
+  - <project-root>/CLAUDE.md (or <project-root>/.claude/CLAUDE.md) —
+  project-scoped, only applies when working in that directory
+
+  Claude Code merges both, with project-level instructions able to
+  override or extend global ones.
+
+❯ i meant limber/.claude/ but i see there's no CLAUDE.md there anyway.    
+woudl it work to move limber's claude.md there or is it better to leave   
+it at repo root?                                                          
+
+● Both locations work — Claude Code picks up CLAUDE.md from either the
+  project root or .claude/ subdirectory.
+
+  Practically:
+  - Root is more visible to collaborators (they see it without knowing
+  about .claude/)
+  - .claude/ groups it with other Claude-specific config (hooks,
+  settings.json, etc.) if you have those
+
+  Since it's checked into the repo and you noted it as "project
+  instructions, checked into the codebase", root is the more conventional
+  spot. No strong reason to move it unless you're accumulating other
+  .claude/ config files.
+
+❯ aight. next, i want help getting back into implementation. can you look 
+ at the imp plan that I expect is in one of the .mds here (maybe in       
+.claude), correlate that with .claude/notes.txt, then lmk what you find   
+
+● Searched for 2 patterns, read 2 files (ctrl+o to expand)
+
+● Now let me check the current code state.
+
+● Searched for 1 pattern, read 2 files (ctrl+o to expand)
+
+● Here's where things stand:
+
+  notes.txt is actually a transcript of your previous implementation
+  session — it ends mid-conversation where you were about to tackle
+  SignalBus::allocate and the question of whether signals should require
+  an initial value.
+
+  ARCHITECTURE.md is the full design doc (your implementation plan).
+  Cross-referencing the two:
+
+  What's done (Phase 1 + early Phase 2):
+  - Value enum ✓
+  - SignalType trait + map_signal_types! macro ✓
+  - SignalReader<T> / SignalWriter<T> structs ✓ (though currently private
+  — need pub)
+  - SignalBus struct stub ✓
+
+  What's next (still in Phase 2):
+  - SignalBus::allocate — stubbed out but commented out in
+  signal_bus.rs:5-10
+  - SignalBus::read and SignalBus::write
+  - StaticSignal<T>
+  - The backing Vec<Value> field on SignalBus (currently empty struct)
+
+  The open question you hit was whether allocate requires an initial
+  value. The architecture doc resolves this: it does take an initial value
+   (see ARCHITECTURE.md:114), and StaticSignal::new uses that to write a
+  value once and drop the writer. The "unwritten signal" problem is a
+  non-issue because every signal is initialized at allocation time.
+
+  Ready to pick up from SignalBus::allocate?
+
+❯ are we actually in phase 2? are there any commits there?                
+
+● Bash(git log --oneline)
+  ⎿  539086d p1: signal read/writers, stub out bus
+     168ac82 p1: convert signal impls to macro
+     1cf66f6 p1: implement tryFrom trait for signal types
+     … +9 lines (ctrl+o to expand)
+
+● All commits are prefixed p1: — you're still in Phase 1. The architecture
+   doc says Phase 1 is:
+
+  ▎ Block out Context, SignalBus, and the Block trait. Implement
+  run_cycle. No real blocks yet — just enough structure to execute a
+  graph.
+
+  Let me check how far along those are.
+
+● Read 2 files (ctrl+o to expand)
+
+● So Phase 1 is mostly done but not quite. What's there:
+
+  - Context with bus + blocks + run_cycle ✓
+  - Block trait with execute ✓
+  - SignalBus stub ✓ (empty struct)
+  - SignalReader<T> / SignalWriter<T> ✓
+  - Value + SignalType + macro ✓
+
+  What's missing to complete Phase 1:
+
+  1. block.execute() signature — it currently takes no args, but the
+  architecture spec says it should take &mut SignalBus
+  (ARCHITECTURE.md:145). That's a discrepancy.
+  2. SignalBus needs its values: Vec<Value> field and allocate/read/write
+  methods before Context is actually runnable.
+  3. Visibility — SignalReader, SignalWriter, SignalBus fields are mostly
+  private/incomplete for inter-module use.
+
+  The signal read/write work you did in the last session (the macro, the
+  structs) is really the bridge between P1 and P2 — it's in P1 commits but
+   pushes into P2 territory. The clearest remaining P1 item is fixing
+  Block::execute to accept &mut SignalBus, then wiring that through
+  Context::run_cycle.
+
+  Want to knock that out to close P1?
+
+✻ Baked for 46s
+
+❯ in the architecture doc, can you check off what's been done so far?     
+(session0). also, please augment CLAUDE.md to mention the new session     
+protocol, which is that we'll be recording a transcript of each claude    
+session to a text document in .claude/sessions (see /0 there)             
+
+● Searched for 1 pattern (ctrl+o to expand)
+  ⎿  Interrupted · What should Claude do instead?
+
+❯ dude, you ok? you've been ruminating for 5 minutes                      
+
+● Sorry! Let me just do both things.
+
+● Read 2 files (ctrl+o to expand)
+
+● Update(ARCHITECTURE.md)
+  ⎿  Added 5 lines, removed 1 line
+      315  
+      316  ## Implementation roadmap
+      317  
+      318 -### Phase 1 — execution loop skeleton                   
+      318 +### Phase 1 — execution loop skeleton ✓ (session 0, most
+          +ly)                                                     
+      319  Block out `Context`, `SignalBus`, and the `Block` trait.
+            Implement `run_cycle`. No real blocks yet — just enough
+            structure to execute a graph.
+      320  
+      321 +Done: `Context`, `SignalBus` stub, `Block` trait, `run_c
+          +ycle`, `Value` enum, `SignalType` trait + `map_signal_ty
+          +pes!` macro, `SignalReader<T>`, `SignalWriter<T>`.      
+      322 +                                                        
+      323 +Remaining: `Block::execute` needs `&mut SignalBus` param
+          +eter (currently no args); `SignalBus` needs `values: Vec
+          +<Value>` field and `allocate`/`read`/`write`.           
+      324 +                                                        
+      325  ### Phase 2 — signals, bundles, and blocks
+      326  Implement `SignalWriter<T>`, `SignalReader<T>`, `StaticS
+           ignal<T>`, `SignalType` trait, and `SignalBus::allocate`
+           . Define the three-bundle pattern. Implement one or two
+           concrete blocks (e.g. `ScaleBlock`, `AdderBlock`) as a w
+           orked example. Scaffold tests for signal wiring and bloc
+           k execution — structure for testability, not full covera
+           ge yet.
+      327  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● Update(CLAUDE.md)
+  ⎿  Added 4 lines
+      10  - When the user shares code for review, give specific, ac
+          tionable feedback
+      11  - When explaining how to do something, use generic exampl
+          es (e.g. `Foo`/`Bar`, not `ScaleBlock`/`SignalBus`) — pre
+          fer examples drawn from or consistent with https://doc.ru
+          st-lang.org/book/ and https://doc.rust-lang.org/std/. The
+           user must synthesize the solution from the concept, not
+          copy a ready-made one.
+      12  - If asked to implement something directly, confirm that'
+          s what they want before doing so
+      13 +                                                         
+      14 +## Session protocol                                      
+      15 +                                                         
+      16 +Each Claude session is recorded as a transcript in `.clau
+         +de/sessions/<n>/notes.txt`. At the start of a new session
+         +, read the most recent transcript to restore context befo
+         +re diving into implementation.                           
+
+
+
+
+
+
+
+
+
+
+● Done. ARCHITECTURE.md roadmap now shows Phase 1 as mostly complete with
+  the two remaining items called out. CLAUDE.md has the session protocol
+  added.
+
+❯ great! last thing: rename/reframe architecture.md to                    
+implementation-plan.md                                                    
+
+● I can't do the git mv myself, but I can move the file and update
+  references. Let me check for any references first.
+
+● Searched for 3 patterns (ctrl+o to expand)
+
+● No references elsewhere. For the rename, use:
+
+  git mv ARCHITECTURE.md IMPLEMENTATION-PLAN.md
+
+  I'd recommend doing it via git mv so git tracks the rename properly
+  rather than seeing a delete + new file.
+
+❯ done, need to refactor it at all or nah?                                
+
+● The content is fine as-is. The only thing slightly off is the internal
+  title at the top — let me check.
+
+● Read 1 file (ctrl+o to expand)
+
+● Just the H1 title. Want me to update it to # limber — implementation
+  plan?
+
+❯ yes                                                                     
+
+● Update(IMPLEMENTATION-PLAN.md)
+  ⎿  Added 1 line, removed 1 line
+      1 -# limber architecture                                     
+      1 +# limber — implementation plan                            
+      2  
+      3  This document captures design decisions reached during ear
+         ly planning. It is a living doc — update it as decisions e
+         volve.
+      4  
+
+● Done.
+
+❯ ok cool, what's left in p1?                                             
+                              
+● From what I noted in the plan earlier:                                  
+                                                                          
+  1. Block::execute needs &mut SignalBus as a parameter — currently it    
+  takes no args (block.rs:2)
+  2. SignalBus needs its values: Vec<Value> field and allocate/read/write 
+  methods (signal_bus.rs:1-3)                                             
+   
+  Once those are in, Context::run_cycle can actually pass the bus to each 
+  block and P1 is done.   
+                                                                          
+❯ ok, so im adding an arg to to Block::execute. but that function isn't   
+defined yet?                                                              
+                                                                          
+● Right — Block is a trait with just a signature, and Context::run_cycle  
+  calls it, but there are no concrete block implementations yet (that's   
+  Phase 2). So for P1 you just need to:                                   
+   
+  1. Update the trait signature in block.rs                               
+  2. Update the call site in context.rs
+                                                                          
+  No concrete impl Block for ... to worry about yet.                      
+  
+❯ now remind me, why is the block taking a reference to the SignalBus?    
+its to allocate its signals?                                              
+                                                                          
+● No — allocation happens at construction time, not in execute. The bus is
+   passed to execute so the block can read its inputs and write its       
+  outputs during the run cycle.                                           
+   
+  At construction, the block calls bus.allocate(...) to reserve signal    
+  slots and get its handles. At execute time, it uses those handles to
+  call bus.read(...) and bus.write(...).                                  
+                          
+❯ ok, peep that                                                           
+                
+● Read 1 file (ctrl+o to expand)                                          
+                          
+● One issue: &mut SignalBus needs a parameter name. Rust requires named   
+  parameters in trait method signatures, unlike C++. So it needs to be
+  e.g. bus: &mut SignalBus.                                               
+                                                                          
+  Also SignalBus will need to be imported — you'll need a use statement or
+   the full path.                                                         
+                                                                          
+❯ ok got it, check again. also, why does "self" not need a name? special  
+case?                                                                     
+                                                                          
+● Read 1 file (ctrl+o to expand)                                          
+                                                                          
+● Looks good.                                                             
+            
+  Yes, self is a special case — it's a reserved keyword that Rust treats  
+  as syntactic sugar. &mut self is shorthand for self: &mut Self. It      
+  always refers to the receiver object, so no separate name is needed.    
+                                                                          
+❯ huh cool, so could you do "self: &mut Self" and it'd still be valid?    
+                                                                       
+● Yes, exactly — it compiles fine. &mut self is just idiomatic shorthand  
+  for it. You'd only ever write the explicit form if you needed an unusual
+   receiver type, like self: Box<Self> or self: Rc<Self>.                 
+                                                                          
+❯ cool. next?                                                             
+                          
+● Update Context::run_cycle to pass the bus to execute. Have a look at    
+  context.rs and see if you can spot what needs to change.
+                                                                          
+❯ i think i did that...                                                   
+                                                                          
+● Read 1 file (ctrl+o to expand)                                          
+                            
+● Good instinct, but there's a borrow issue. self.bus passes ownership,   
+  and execute needs a &mut SignalBus. So it should be &mut self.bus. Does
+  it compile with that change?                                            
+                                                                          
+❯ hmm can you explain that syntax for &mut self.bus in detail?            
+  ⎿  Interrupted · What should Claude do instead?                         
+                                                                          
+❯ you good?                                                               
+  ⎿  Interrupted · What should Claude do instead?                         
+                                                                          
+Resume this session with:                                                 
+claude --resume c7592b5f-e0ad-4b77-a5da-12986b4f249b                      
